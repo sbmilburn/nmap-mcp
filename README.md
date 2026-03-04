@@ -1,0 +1,218 @@
+# nmap-mcp
+
+> An nmap MCP server for AI-assisted network security auditing.
+
+A [Model Context Protocol](https://modelcontextprotocol.io) server that wraps [nmap](https://nmap.org) with **14 purpose-built tools**, returning **structured JSON output** instead of raw text — so your AI agent can actually reason about what it finds.
+
+Built for use with [OpenClaw](https://openclaw.ai) and compatible with any MCP client.
+
+---
+
+## Why this one?
+
+Most nmap MCP servers dump raw nmap text back at the model. This one parses everything into structured JSON, so you get machine-readable port lists, service versions, OS matches, and script output — not walls of text to squint at.
+
+It also ships with things you actually need for responsible security tooling:
+
+- **Scope enforcement** — CIDR allowlist, configured in `config.yaml`. Targets outside your allowed ranges are rejected before nmap runs and logged. No accidental scans of the public internet.
+- **Audit logging** — every tool call is logged as a JSON line: timestamp, tool, target, args, success/fail.
+- **Scan persistence** — every result is saved to disk with a `scan_id`. Retrieve any past scan cross-session with `nmap_get_scan`.
+- **Injection guard** — `nmap_custom_scan` strips shell metacharacters before they touch a subprocess.
+- **Privilege-aware** — SYN, OS, and ARP scans need raw socket access. The README tells you the one command to set it up cleanly (`setcap`), no full root required.
+
+---
+
+## Requirements
+
+- Python 3.10+
+- nmap 7.0+ installed and in PATH
+- `fastmcp`, `python-nmap`, `pyyaml` (see `requirements.txt`)
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/sbmilburn/nmap-mcp.git
+cd nmap-mcp
+pip install -r requirements.txt
+```
+
+### Grant nmap raw socket capability
+
+Required for SYN scans, OS detection, and ARP discovery. Only needs to be done once (redo after nmap upgrades):
+
+```bash
+sudo setcap cap_net_raw+ep $(which nmap)
+
+# Verify
+getcap $(which nmap)
+# /usr/bin/nmap cap_net_raw=ep
+```
+
+> **Why `setcap` instead of `sudo`?** It gives nmap exactly the capability it needs (raw sockets) without running the whole process as root. Cleaner and less risky than a sudoers rule.
+
+### Configure scope
+
+Edit `config.yaml` and set your allowed CIDRs before running:
+
+```yaml
+allowed_cidrs:
+  - "127.0.0.0/8"         # loopback (always useful for testing)
+  - "192.168.1.0/24"      # your local network
+  - "10.0.0.0/8"          # internal RFC1918 — trim to your actual range
+
+audit_log: "./audit.log"
+scan_dir: "./scans"
+nmap_bin: "/usr/bin/nmap"
+
+timeouts:
+  quick: 120
+  standard: 300
+  deep: 600
+```
+
+---
+
+## Register with mcporter (OpenClaw)
+
+Add to `~/.mcporter/mcporter.json`:
+
+```json
+{
+  "mcpServers": {
+    "nmap": {
+      "command": "python3",
+      "args": ["-u", "/path/to/nmap-mcp/server.py"],
+      "type": "stdio",
+      "env": {
+        "NMAP_CONFIG": "/path/to/nmap-mcp/config.yaml"
+      }
+    }
+  }
+}
+```
+
+Restart OpenClaw to load it. Verify with:
+
+```bash
+npx mcporter list nmap
+```
+
+---
+
+## Tools
+
+### Host Discovery
+
+| Tool | Description | Needs cap_net_raw |
+|------|-------------|:-----------------:|
+| `nmap_ping_scan(target)` | ICMP + TCP ping sweep, no port scan | No |
+| `nmap_arp_discovery(target)` | ARP discovery — most reliable on LAN, returns MAC+vendor | Yes |
+
+### Port Scanning
+
+| Tool | Description | Needs cap_net_raw |
+|------|-------------|:-----------------:|
+| `nmap_top_ports(target, count=100)` | Fast TCP connect scan of N most common ports | No |
+| `nmap_syn_scan(target, ports="1-1024")` | SYN half-open scan — faster and stealthier | Yes |
+| `nmap_tcp_scan(target, ports="1-1024")` | Full TCP connect scan — no special privileges | No |
+| `nmap_udp_scan(target, ports="...")` | UDP scan — finds SNMP, DNS, NTP, TFTP, etc. | Yes |
+
+### Service & OS Detection
+
+| Tool | Description | Needs cap_net_raw |
+|------|-------------|:-----------------:|
+| `nmap_service_detection(target, ports, intensity=7)` | Service name, product, version, CPE | No |
+| `nmap_os_detection(target)` | OS fingerprinting with accuracy % | Yes |
+
+### NSE Scripts
+
+| Tool | Description | Needs cap_net_raw |
+|------|-------------|:-----------------:|
+| `nmap_script_scan(target, scripts, ports)` | Run named NSE scripts, e.g. `ssl-cert,http-title` | No |
+| `nmap_vuln_scan(target, ports)` | Full `vuln` NSE category — checks CVEs + misconfigs | No |
+
+### All-in-One & Utilities
+
+| Tool | Description | Needs cap_net_raw |
+|------|-------------|:-----------------:|
+| `nmap_full_recon(target, ports)` | SYN + service + OS + default scripts combined | Yes |
+| `nmap_custom_scan(target, flags)` | Arbitrary flags, still scope-checked and logged | Varies |
+| `nmap_list_scans(limit=20)` | List recent saved scans | No |
+| `nmap_get_scan(scan_id)` | Retrieve full result of any past scan | No |
+
+---
+
+## Example Output
+
+```json
+{
+  "scan_id": "20260304_120000_a1b2c3",
+  "target": "192.168.1.1",
+  "ports_scanned": "1-1024",
+  "total_open": 3,
+  "per_host": {
+    "192.168.1.1": {
+      "hostname": "router.local",
+      "state": "up",
+      "open_ports": [
+        {"port": 22, "protocol": "tcp", "state": "open", "service": "ssh", "version": "OpenSSH 8.9"},
+        {"port": 80, "protocol": "tcp", "state": "open", "service": "http", "version": ""},
+        {"port": 443, "protocol": "tcp", "state": "open", "service": "https", "version": ""}
+      ]
+    }
+  },
+  "all_open_ports": [...]
+}
+```
+
+---
+
+## Typical Audit Workflow
+
+```
+1. Find live hosts:           nmap_arp_discovery("192.168.1.0/24")
+2. Quick port overview:       nmap_top_ports("192.168.1.0/24", count=100)
+3. Service detection:         nmap_service_detection("192.168.1.1")
+4. OS fingerprint:            nmap_os_detection("192.168.1.1")
+5. Check for known vulns:     nmap_vuln_scan("192.168.1.1")
+6. Deep single-host audit:    nmap_full_recon("192.168.1.1")
+```
+
+---
+
+## Running Tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+28 tests covering scope enforcement, audit logging, scan persistence, injection guards, port summary logic, and live integration against localhost.
+
+Set `SKIP_LIVE_TESTS=1` to run only unit tests (no actual nmap calls):
+
+```bash
+SKIP_LIVE_TESTS=1 python3 -m pytest tests/ -v
+```
+
+---
+
+## Security Notes
+
+- **Only scan networks you own or have explicit written permission to scan.** Unauthorized network scanning is illegal in many jurisdictions.
+- Keep your `config.yaml` CIDR allowlist tight — default to your actual subnet, not all of RFC1918.
+- The audit log captures all scan activity. Review it periodically.
+- `nmap_custom_scan` rejects shell metacharacters (`;`, `|`, `&`, `` ` ``, `$`, etc.) but is still the most flexible tool — use the specific tools where possible.
+
+---
+
+## License
+
+MIT
+
+---
+
+## Contributing
+
+PRs welcome. Please include tests for new tools or behavior changes — the test suite is the spec.

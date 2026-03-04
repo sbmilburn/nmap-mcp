@@ -1,0 +1,15 @@
+# Scan results and audit logs — these contain network data, don't commit
+scans/
+audit.log
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local config overrides (keep the example, not your real CIDRs)
+config.local.yaml
