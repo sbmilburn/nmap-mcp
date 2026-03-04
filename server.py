@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import socket
 import subprocess
 import sys
 import ipaddress
@@ -84,30 +86,78 @@ def _in_scope(target: str) -> bool:
     """Return True if every address in target falls within an allowed CIDR."""
     if not ALLOWED_CIDRS:
         return True  # scope check disabled
+    # Try as CIDR range first
     try:
         net = ipaddress.ip_network(target, strict=False)
         return any(net.subnet_of(allowed) or net == allowed for allowed in ALLOWED_CIDRS)
     except ValueError:
         pass
-    # Try as a plain IP
+    # Try as plain IP
     try:
         addr = ipaddress.ip_address(target)
         return any(addr in allowed for allowed in ALLOWED_CIDRS)
     except ValueError:
         pass
-    # Hostname — we can't resolve it here, allow through and let nmap error naturally
-    # In a stricter environment you'd resolve and check.
-    log.warning("Scope check: hostname '%s' cannot be validated by CIDR — allowing with warning", target)
-    return True
+    # Hostname — resolve to IPs and validate every resolved address.
+    # Fail closed: if resolution fails or any IP is out of scope, reject.
+    try:
+        resolved = socket.getaddrinfo(target, None)
+        addrs = {r[4][0] for r in resolved}
+        if not addrs:
+            log.warning("Scope check: hostname '%s' resolved to no addresses — rejecting", target)
+            return False
+        for raw in addrs:
+            try:
+                addr = ipaddress.ip_address(raw)
+                if not any(addr in allowed for allowed in ALLOWED_CIDRS):
+                    log.warning("Scope check: hostname '%s' resolves to out-of-scope IP %s", target, raw)
+                    return False
+            except ValueError:
+                return False
+        return True
+    except socket.gaierror:
+        log.warning("Scope check: hostname '%s' could not be resolved — rejecting", target)
+        return False
 
 def _require_scope(target: str, tool: str) -> None:
-    """Raise ValueError if target is out of scope."""
+    """Validate target format and reject if out of scope."""
+    _validate_target(target)
     if not _in_scope(target):
         _audit(tool, target, {}, "REJECTED: out of scope", False)
         raise ValueError(
             f"Target '{target}' is outside the allowed scan scope. "
             f"Allowed CIDRs: {[str(c) for c in ALLOWED_CIDRS]}"
         )
+
+# ---------------------------------------------------------------------------
+# Target validation
+# ---------------------------------------------------------------------------
+
+# Valid target patterns: IPv4, IPv4/CIDR, IPv6, simple hostname (no spaces or shell chars)
+_TARGET_RE = re.compile(
+    r'^('
+    r'(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?'        # IPv4 or IPv4/CIDR
+    r'|[0-9a-fA-F:]+(/\d{1,3})?'               # IPv6 or IPv6/prefix
+    r'|[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,253}[a-zA-Z0-9])?'  # hostname
+    r')$'
+)
+
+def _validate_target(target: str) -> None:
+    """Raise ValueError if target contains suspicious characters."""
+    if not target or len(target) > 255:
+        raise ValueError(f"Invalid target: must be 1-255 characters")
+    if not _TARGET_RE.match(target):
+        raise ValueError(
+            f"Invalid target '{target}': must be an IP address, CIDR range, or hostname. "
+            "No spaces or special characters allowed."
+        )
+
+# Nmap flags that take path arguments — never allow in custom_scan
+_DANGEROUS_FLAGS = re.compile(
+    r'(^|[\s])(--script(?!=-)|-oN|-oX|-oG|-oA|-oS|--datadir|'
+    r'--servicedb|--versiondb|--resume|--stylesheet|--script-args)',
+    re.IGNORECASE
+)
 
 # ---------------------------------------------------------------------------
 # Scan execution helpers
@@ -516,12 +566,22 @@ def nmap_custom_scan(target: str, flags: str) -> str:
     """
     _require_scope(target, "nmap_custom_scan")
 
-    # Basic injection guard — reject shell metacharacters
-    FORBIDDEN = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"]
+    # Reject shell metacharacters
+    FORBIDDEN = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r", "\x00"]
     for ch in FORBIDDEN:
         if ch in flags:
-            _audit("nmap_custom_scan", target, {"flags": flags}, f"REJECTED: forbidden char '{ch}'", False)
-            raise ValueError(f"Forbidden character '{ch}' in flags. Use individual tool functions for complex scans.")
+            _audit("nmap_custom_scan", target, {"flags": flags}, f"REJECTED: forbidden char", False)
+            raise ValueError(f"Forbidden character in flags. Use individual tool functions for complex scans.")
+
+    # Block flags that write to paths or execute arbitrary code
+    # (nmap output flags, --script with path, --datadir, etc.)
+    if _DANGEROUS_FLAGS.search(flags):
+        _audit("nmap_custom_scan", target, {"flags": flags}, "REJECTED: dangerous flag", False)
+        raise ValueError(
+            "Flags containing path-writing or code-execution options are not allowed "
+            "(e.g. -oN, -oX, --script with path, --datadir). "
+            "Use nmap_script_scan or nmap_vuln_scan for NSE scripts."
+        )
 
     args = flags.split() + [target]
     raw = _run_nmap(args, timeout=TIMEOUTS["deep"])

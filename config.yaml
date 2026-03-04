@@ -5,9 +5,9 @@
 # Set to [] to disable enforcement (NOT recommended for shared environments).
 allowed_cidrs:
   - "127.0.0.0/8"       # loopback — always useful for testing
-  - "192.168.1.0/24"    # example: replace with your actual network range
-  # - "10.0.0.0/8"      # uncomment and trim to your actual RFC1918 range
-  # - "172.16.0.0/12"   # uncomment if needed
+  - "192.168.0.0/16"    # RFC1918 — trim to your actual range in production
+  - "10.0.0.0/8"        # RFC1918 — trim to your actual range in production
+  - "172.16.0.0/12"     # RFC1918 — trim to your actual range in production
 
 # Audit log — records every tool invocation with target, args, success/fail
 # Defaults to ./audit.log relative to server.py if omitted

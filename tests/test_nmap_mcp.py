@@ -48,6 +48,7 @@ class TestScopeEnforcement(unittest.TestCase):
 
     def test_private_rfc1918_in_scope(self):
         """Configured RFC1918 ranges must be in scope."""
+        # Default config allows 192.168.1.0/24, 10.0.0.0/8, 172.16.0.0/12
         self.assertTrue(self.server._in_scope("192.168.1.1"))
         self.assertTrue(self.server._in_scope("10.1.2.3"))
         self.assertTrue(self.server._in_scope("172.16.0.1"))
@@ -169,8 +170,51 @@ class TestScanPersistence(unittest.TestCase):
         self.assertTrue(all("scan_id" in s and "tool" in s for s in listing["scans"]))
 
 
+class TestTargetValidation(unittest.TestCase):
+    """_validate_target must reject malformed or injection-attempt targets."""
+
+    def setUp(self):
+        import server
+        self.server = server
+
+    def test_valid_ipv4_accepted(self):
+        try:
+            self.server._validate_target("192.168.1.1")
+        except ValueError:
+            self.fail("Valid IPv4 raised ValueError")
+
+    def test_valid_cidr_accepted(self):
+        try:
+            self.server._validate_target("10.0.0.0/8")
+        except ValueError:
+            self.fail("Valid CIDR raised ValueError")
+
+    def test_valid_hostname_accepted(self):
+        try:
+            self.server._validate_target("router.local")
+        except ValueError:
+            self.fail("Valid hostname raised ValueError")
+
+    def test_space_in_target_rejected(self):
+        """Space in target is an injection vector into python-nmap string formatting."""
+        with self.assertRaises(ValueError):
+            self.server._validate_target("192.168.1.1 --script evil")
+
+    def test_semicolon_in_target_rejected(self):
+        with self.assertRaises(ValueError):
+            self.server._validate_target("192.168.1.1;id")
+
+    def test_empty_target_rejected(self):
+        with self.assertRaises(ValueError):
+            self.server._validate_target("")
+
+    def test_overlong_target_rejected(self):
+        with self.assertRaises(ValueError):
+            self.server._validate_target("a" * 256)
+
+
 class TestCustomScanInjectionGuard(unittest.TestCase):
-    """nmap_custom_scan must reject shell metacharacters."""
+    """nmap_custom_scan must reject shell metacharacters and dangerous flags."""
 
     def setUp(self):
         import server
@@ -192,16 +236,65 @@ class TestCustomScanInjectionGuard(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.server.nmap_custom_scan("127.0.0.1", "-sT -p $PORT")
 
+    def test_output_flag_oN_rejected(self):
+        """-oN writes to arbitrary path — must be blocked."""
+        with self.assertRaises(ValueError):
+            self.server.nmap_custom_scan("127.0.0.1", "-sT -oN /etc/cron.d/backdoor")
+
+    def test_output_flag_oX_rejected(self):
+        with self.assertRaises(ValueError):
+            self.server.nmap_custom_scan("127.0.0.1", "-sT -oX /tmp/out.xml")
+
+    def test_script_path_rejected(self):
+        """--script with path is RCE via Lua — must be blocked."""
+        with self.assertRaises(ValueError):
+            self.server.nmap_custom_scan("127.0.0.1", "--script /tmp/evil.nse")
+
+    def test_datadir_rejected(self):
+        """--datadir loads attacker-controlled nmap data — must be blocked."""
+        with self.assertRaises(ValueError):
+            self.server.nmap_custom_scan("127.0.0.1", "--datadir /tmp/evil")
+
+    def test_null_byte_rejected(self):
+        with self.assertRaises(ValueError):
+            self.server.nmap_custom_scan("127.0.0.1", "-sT\x00-p 22")
+
     def test_valid_flags_accepted(self):
         """Legit flags must not raise (actual scan may fail in unit test env, that's ok)."""
-        # Just verify no injection error — actual nmap call will run
-        # We can't easily mock the scan in this test, so just check the guard passes
         try:
             self.server.nmap_custom_scan("127.0.0.1", "-sT -p 22 --open")
         except ValueError as e:
             self.fail(f"Valid flags raised ValueError: {e}")
         except Exception:
             pass  # nmap execution errors are fine in unit test context
+
+
+class TestHostnameScopeResolution(unittest.TestCase):
+    """Hostname targets must be resolved and all IPs validated against CIDR allowlist."""
+
+    def setUp(self):
+        import server
+        self.server = server
+
+    def test_localhost_hostname_in_scope(self):
+        """'localhost' resolves to 127.0.0.1 which is in scope."""
+        self.assertTrue(self.server._in_scope("localhost"))
+
+    def test_public_hostname_out_of_scope(self):
+        """A hostname resolving to a public IP must be rejected."""
+        # Use a real hostname that resolves to a public IP
+        # We mock socket to avoid network dependency
+        import unittest.mock as mock
+        with mock.patch("socket.getaddrinfo") as mock_dns:
+            mock_dns.return_value = [(None, None, None, None, ("8.8.8.8", 0))]
+            self.assertFalse(self.server._in_scope("google.com"))
+
+    def test_unresolvable_hostname_rejected(self):
+        """A hostname that fails DNS resolution must be rejected (fail closed)."""
+        import unittest.mock as mock
+        import socket
+        with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("Name not found")):
+            self.assertFalse(self.server._in_scope("does-not-exist.invalid"))
 
 
 class TestPortSummaryHelper(unittest.TestCase):
