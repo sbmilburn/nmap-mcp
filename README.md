@@ -144,40 +144,127 @@ npx mcporter list nmap
 
 ---
 
+## Usage with OpenClaw
+
+Just ask naturally — OpenClaw picks the right tool and runs it:
+
+> *"Scan 10.35.251.0/24 for open ports"*
+
+> *"Run a full recon on 10.35.251.10"*
+
+> *"What services are running on 10.35.251.50?"*
+
+> *"Check 10.35.251.25 for known vulnerabilities"*
+
+> *"Do an ARP sweep of the 10.35.251.0/24 network and tell me what's alive"*
+
+The agent picks the appropriate tool, runs it, and gets back structured JSON it can actually reason about — not a wall of text to parse.
+
+---
+
 ## Example Output
+
+### Network sweep — find live hosts and open ports across a subnet
+
+**Prompt:** *"Do a fast port scan of 10.35.251.0/24"*
 
 ```json
 {
   "scan_id": "20260304_120000_a1b2c3",
-  "target": "192.168.1.1",
-  "ports_scanned": "1-1024",
-  "total_open": 3,
+  "target": "10.35.251.0/24",
+  "top_ports_scanned": 100,
+  "total_open": 11,
   "per_host": {
-    "192.168.1.1": {
-      "hostname": "router.local",
+    "10.35.251.1": {
+      "hostname": "gateway.local",
       "state": "up",
       "open_ports": [
-        {"port": 22, "protocol": "tcp", "state": "open", "service": "ssh", "version": "OpenSSH 8.9"},
-        {"port": 80, "protocol": "tcp", "state": "open", "service": "http", "version": ""},
-        {"port": 443, "protocol": "tcp", "state": "open", "service": "https", "version": ""}
+        {"port": 53,  "protocol": "tcp", "state": "open", "service": "domain",  "version": ""},
+        {"port": 80,  "protocol": "tcp", "state": "open", "service": "http",    "version": ""},
+        {"port": 443, "protocol": "tcp", "state": "open", "service": "https",   "version": ""}
+      ]
+    },
+    "10.35.251.20": {
+      "hostname": "",
+      "state": "up",
+      "open_ports": [
+        {"port": 22,  "protocol": "tcp", "state": "open", "service": "ssh",     "version": ""},
+        {"port": 80,  "protocol": "tcp", "state": "open", "service": "http",    "version": ""},
+        {"port": 443, "protocol": "tcp", "state": "open", "service": "https",   "version": ""}
+      ]
+    },
+    "10.35.251.55": {
+      "hostname": "",
+      "state": "up",
+      "open_ports": [
+        {"port": 80,   "protocol": "tcp", "state": "open", "service": "http",      "version": ""},
+        {"port": 631,  "protocol": "tcp", "state": "open", "service": "ipp",       "version": ""},
+        {"port": 9100, "protocol": "tcp", "state": "open", "service": "jetdirect", "version": ""}
+      ]
+    },
+    "10.35.251.100": {
+      "hostname": "",
+      "state": "up",
+      "open_ports": [
+        {"port": 8080, "protocol": "tcp", "state": "open", "service": "http-proxy", "version": ""}
       ]
     }
-  },
-  "all_open_ports": [...]
+  }
 }
 ```
+
+The agent can immediately tell you: `.1` is the gateway, `.55` looks like a network printer (IPP + JetDirect), `.20` has SSH exposed, and `.100` has something on 8080 worth investigating.
+
+---
+
+### Service detection — find out exactly what's running
+
+**Prompt:** *"What services are running on 10.35.251.20?"*
+
+```json
+{
+  "scan_id": "20260304_120045_b2c3d4",
+  "target": "10.35.251.20",
+  "intensity": 7,
+  "total_open": 2,
+  "per_host": {
+    "10.35.251.20": {
+      "hostname": "",
+      "state": "up",
+      "open_ports": [
+        {
+          "port": 22,
+          "protocol": "tcp",
+          "state": "open",
+          "service": "ssh",
+          "version": "OpenSSH 9.6p1 Ubuntu 3ubuntu13.14"
+        },
+        {
+          "port": 80,
+          "protocol": "tcp",
+          "state": "open",
+          "service": "http",
+          "version": "nginx 1.24.0"
+        }
+      ]
+    }
+  }
+}
+```
+
+Exact software versions — actionable for CVE lookup or patch management.
 
 ---
 
 ## Typical Audit Workflow
 
 ```
-1. Find live hosts:           nmap_arp_discovery("192.168.1.0/24")
-2. Quick port overview:       nmap_top_ports("192.168.1.0/24", count=100)
-3. Service detection:         nmap_service_detection("192.168.1.1")
-4. OS fingerprint:            nmap_os_detection("192.168.1.1")
-5. Check for known vulns:     nmap_vuln_scan("192.168.1.1")
-6. Deep single-host audit:    nmap_full_recon("192.168.1.1")
+1. Find live hosts:           nmap_arp_discovery("10.35.251.0/24")
+2. Quick port overview:       nmap_top_ports("10.35.251.0/24", count=100)
+3. Service detection:         nmap_service_detection("10.35.251.20")
+4. OS fingerprint:            nmap_os_detection("10.35.251.20")
+5. Check for known vulns:     nmap_vuln_scan("10.35.251.20")
+6. Deep single-host audit:    nmap_full_recon("10.35.251.20")
 ```
 
 ---
