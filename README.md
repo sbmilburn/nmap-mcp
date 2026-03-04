@@ -24,6 +24,8 @@ It also ships with things you actually need for responsible security tooling:
 
 ## Requirements
 
+- [OpenClaw](https://openclaw.ai) — the MCP-native AI agent runtime this is built for
+- [mcporter](https://mcporter.dev) — MCP server manager (`npm install -g mcporter`); not bundled with OpenClaw, needs separate install
 - Python 3.10+
 - nmap 7.0+ installed and in PATH
 - `fastmcp`, `python-nmap`, `pyyaml` (see `requirements.txt`)
@@ -76,7 +78,19 @@ timeouts:
 
 ## Register with mcporter (OpenClaw)
 
-Add to `~/.mcporter/mcporter.json`:
+### 1. Install mcporter (if you haven't already)
+
+mcporter is a separate package — not bundled with OpenClaw:
+
+```bash
+npm install -g mcporter
+```
+
+Verify: `mcporter list` should run without errors.
+
+### 2. Add nmap-mcp to mcporter's config
+
+Edit (or create) `~/.mcporter/mcporter.json`:
 
 ```json
 {
@@ -93,11 +107,19 @@ Add to `~/.mcporter/mcporter.json`:
 }
 ```
 
-Restart OpenClaw to load it. Verify with:
+Replace `/path/to/nmap-mcp/` with the actual directory where you cloned this repo.
+
+If `mcporter.json` already exists with other servers, add just the `"nmap": { ... }` block inside `"mcpServers"`.
+
+### 3. Restart OpenClaw
+
+OpenClaw reads `mcporter.json` at startup. After restarting, verify the tools loaded:
 
 ```bash
 npx mcporter list nmap
 ```
+
+You should see all 14 tools listed. If you see an error, check that `python3` is in your PATH and that `fastmcp` is installed (`pip install fastmcp`).
 
 ---
 
