@@ -34,13 +34,40 @@ It also ships with things you actually need for responsible security tooling:
 
 ## Installation
 
+### Option A — ClawHub (recommended)
+
+The easiest way if you're already using OpenClaw:
+
+```bash
+# Install the ClawHub CLI if you haven't already
+npm i -g clawhub
+
+# Install the skill
+clawhub install nmap-mcp
+```
+
+Files land in `~/.openclaw/workspace/skills/nmap-mcp/`. Then follow the [Post-install setup](#post-install-setup) steps below.
+
+### Option B — GitHub
+
 ```bash
 git clone https://github.com/sbmilburn/nmap-mcp.git
 cd nmap-mcp
+```
+
+Then follow the [Post-install setup](#post-install-setup) steps below.
+
+---
+
+### Post-install setup
+
+#### 1. Install Python dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Grant nmap raw socket capability
+#### 2. Grant nmap raw socket capability
 
 Required for SYN scans, OS detection, and ARP discovery. Only needs to be done once (redo after nmap upgrades):
 
@@ -54,7 +81,7 @@ getcap $(which nmap)
 
 > **Why `setcap` instead of `sudo`?** It gives nmap exactly the capability it needs (raw sockets) without running the whole process as root. Cleaner and less risky than a sudoers rule.
 
-### Configure scope
+#### 3. Configure scope
 
 Edit `config.yaml` and set your allowed CIDRs before running:
 
@@ -107,9 +134,11 @@ Edit (or create) `~/.mcporter/mcporter.json`:
 }
 ```
 
-Replace `/path/to/nmap-mcp/` with the actual directory where you cloned this repo.
+Replace `/path/to/nmap-mcp/` with the actual path to the skill:
+- **ClawHub install:** `~/.openclaw/workspace/skills/nmap-mcp/`
+- **GitHub clone:** wherever you ran `git clone`
 
-If `mcporter.json` already exists with other servers, add just the `"nmap": { ... }` block inside `"mcpServers"`.
+If `mcporter.json` already exists with other servers, add just the `"nmap": { ... }` block inside `"mcpServers"` — don't replace the whole file.
 
 ### 3. Restart OpenClaw
 
